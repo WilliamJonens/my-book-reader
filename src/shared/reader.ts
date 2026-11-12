@@ -34,6 +34,7 @@ export interface ReaderApi {
   getSettings: () => Promise<ReaderSettings>
   saveSettings: (settings: ReaderSettings) => Promise<SettingsResult>
   openBook: () => Promise<BookData | null>
+  isCursorOutside: () => Promise<boolean>
   restoreBook: () => Promise<BookData | null>
   decodeBook: (encoding: string) => Promise<BookData | null>
   saveProgress: (path: string, progress: number) => Promise<void>

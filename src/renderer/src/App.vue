@@ -11,8 +11,6 @@ const book = shallowRef<BookData | null>(null)
 const settings = shallowRef<ReaderSettings | null>(null)
 const showSettings = shallowRef(false)
 const message = shallowRef('')
-/*** 阅读窗口根节点，用于换书后确认鼠标是否仍在窗口内。 */
-const shell = useTemplateRef<HTMLElement>('shell')
 const reader = useTemplateRef<HTMLElement>('reader')
 const progress = shallowRef(0)
 /*** 正文按原有换行分段，仅渲染可见段。 */
@@ -149,7 +147,9 @@ async function openBook(): Promise<void> {
     if (result) {
       message.value = ''
       await showBook(result)
-      if (!shell.value?.matches(':hover')) onMouseLeave()
+      /*** 原生文件选择框可能吞掉移出事件，换书后按实际鼠标位置同步隐去状态。 */
+      if (await window.api.isCursorOutside()) onMouseLeave()
+      else onMouseEnter()
     }
   } catch (error) {
     message.value = `打开文件失败：${String(error)}`
@@ -359,7 +359,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main ref="shell" class="shell" :class="{ fullyTransparent: settings?.backgroundOpacity === 0 }" :style="shellStyle" @mouseleave="onMouseLeave" @mouseenter="onMouseEnter" @contextmenu.prevent="openContextMenu">
+  <main class="shell" :class="{ fullyTransparent: settings?.backgroundOpacity === 0 }" :style="shellStyle" @mouseleave="onMouseLeave" @mouseenter="onMouseEnter" @contextmenu.prevent="openContextMenu">
     <!-- 顶部始终保留 10 像素透明区域，用于拖动窗口。 -->
     <div class="drag-strip" aria-hidden="true" @pointerdown="startMove" @pointermove="moveWindow" @pointerup="endMove" @pointercancel="endMove" @lostpointercapture="endMove"></div>
     <!-- 窗口边缘拖动区在透明窗口中提供缩放操作。 -->

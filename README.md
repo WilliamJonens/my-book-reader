@@ -17,6 +17,13 @@
 
 详细操作见 [使用说明](docs/使用说明.md)。
 
+## v1.1 更新
+
+- 修复更换 TXT 后，“鼠标移出后隐去内容”偶尔不再生效的问题。
+- 关闭阅读器时保存窗口宽高，下次启动恢复上次调整的尺寸。
+
+完整记录见 [版本说明](CHANGELOG.md)。
+
 ## 本地运行
 
 在项目根目录执行：
@@ -34,7 +41,7 @@ pnpm dev
 pnpm build:win
 ~~~
 
-安装包输出到 dist 目录，文件名形如 my-book-reader-1.0.0-setup.exe。dist、out 和 node_modules 不纳入源码仓库。
+安装包输出到 dist 目录，文件名形如 my-book-reader-1.1.0-setup.exe。dist、out 和 node_modules 不纳入源码仓库。
 
 开发与打包说明见 [开发说明](docs/开发说明.md)。
 

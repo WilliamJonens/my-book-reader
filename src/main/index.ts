@@ -33,10 +33,10 @@ function showWindow(): void {
   mainWindow?.focus()
 }
 
-function createWindow(): void {
+function createWindow(size: { width: number; height: number }): void {
   mainWindow = new BrowserWindow({
-    width: 760,
-    height: 620,
+    width: size.width,
+    height: size.height,
     title: 'my-book阅读器',
     minWidth: 220,
     minHeight: 130,
@@ -100,7 +100,8 @@ app.whenReady().then(async () => {
     progress: Record<string, number>
     lastBookPath: string
     lastEncoding: string
-  }>({ defaults: { settings: defaultSettings, progress: {}, lastBookPath: '', lastEncoding: '' } })
+    windowSize: { width: number; height: number }
+  }>({ defaults: { settings: defaultSettings, progress: {}, lastBookPath: '', lastEncoding: '', windowSize: { width: 760, height: 620 } } })
   const progressKey = (path: string): string => Buffer.from(path).toString('base64url')
   const getProgress = (path: string): number => store.get('progress')[progressKey(path)] ?? 0
   const saveProgress = (path: string, progress: number): void => {
@@ -140,7 +141,13 @@ app.whenReady().then(async () => {
 
   electronApp.setAppUserModelId('com.mybook.reader')
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
-  createWindow()
+  createWindow(store.get('windowSize'))
+  /*** 关闭时记录调整后的窗口宽高，下次启动恢复。 */
+  mainWindow?.on('close', () => {
+    if (!mainWindow) return
+    const [width, height] = mainWindow.getSize()
+    store.set('windowSize', { width, height })
+  })
   registerBossKey(store.get('settings'))
 
   ipcMain.handle('reader:context-menu', (_event, hasSelection: boolean): Promise<void> => {
@@ -170,6 +177,13 @@ app.whenReady().then(async () => {
   tray.on('double-click', showWindow)
 
   ipcMain.handle('reader:get-settings', () => store.get('settings'))
+  /*** 原生文件选择框关闭后，用屏幕坐标确认鼠标是否已离开阅读窗口。 */
+  ipcMain.handle('reader:cursor-outside', (): boolean => {
+    if (!mainWindow) return false
+    const { x, y, width, height } = mainWindow.getBounds()
+    const cursor = screen.getCursorScreenPoint()
+    return cursor.x < x || cursor.x >= x + width || cursor.y < y || cursor.y >= y + height
+  })
   ipcMain.handle('reader:save-settings', (_, settings: ReaderSettings): SettingsResult => {
     const previous = store.get('settings')
     if (settings.bossKeyEnabled && (!settings.bossShortcut || !registerBossKey(settings))) {

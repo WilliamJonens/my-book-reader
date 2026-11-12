@@ -5,6 +5,7 @@ const api: ReaderApi = {
   getSettings: () => ipcRenderer.invoke('reader:get-settings'),
   saveSettings: (settings: ReaderSettings) => ipcRenderer.invoke('reader:save-settings', settings),
   openBook: () => ipcRenderer.invoke('reader:open-book'),
+  isCursorOutside: () => ipcRenderer.invoke('reader:cursor-outside'),
   restoreBook: () => ipcRenderer.invoke('reader:restore-book'),
   decodeBook: (encoding: string) => ipcRenderer.invoke('reader:decode-book', encoding),
   saveProgress: (path: string, progress: number) => ipcRenderer.invoke('reader:save-progress', path, progress),
