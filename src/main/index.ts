@@ -1,11 +1,15 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, screen, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, screen, Tray } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { detect } from 'chardet'
 import iconv from 'iconv-lite'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import type { BookData, ReaderCommand, ReaderSettings, SettingsResult } from '../shared/reader'
+import type { BookData, ReaderCommand, ReaderSettings, ReaderView, SettingsResult } from '../shared/reader'
+import type { ZhihuContentType, ZhihuResult } from '../shared/zhihu'
+import type { TiebaSort } from '../shared/tieba'
+import { createZhihuClient } from './zhihu'
+import { createTiebaClient } from './tieba'
 
 const defaultSettings: ReaderSettings = {
   hideOnLeave: false,
@@ -17,6 +21,9 @@ const defaultSettings: ReaderSettings = {
   fontSize: 19,
   fontColor: '#f5f1e8',
   fontOpacity: 1,
+  zhihuTitleSize: 16,
+  zhihuBodySize: 14,
+  zhihuHintSize: 11,
   bossKeyEnabled: false,
   bossShortcut: 'Control+Shift+Space',
   nextPageKey: 'PageDown',
@@ -101,7 +108,43 @@ app.whenReady().then(async () => {
     lastBookPath: string
     lastEncoding: string
     windowSize: { width: number; height: number }
-  }>({ defaults: { settings: defaultSettings, progress: {}, lastBookPath: '', lastEncoding: '', windowSize: { width: 760, height: 620 } } })
+    zhihuCookie: string
+    tiebaForums: string[]
+  }>({ defaults: { settings: defaultSettings, progress: {}, lastBookPath: '', lastEncoding: '', windowSize: { width: 760, height: 620 }, zhihuCookie: '', tiebaForums: [] } })
+  /*** Cookie 只在主进程解密；设置面板仅查询是否已保存。 */
+  const getZhihuCookie = (): string => {
+    const encrypted = store.get('zhihuCookie')
+    return encrypted && safeStorage.isEncryptionAvailable()
+      ? safeStorage.decryptString(Buffer.from(encrypted, 'base64')) : ''
+  }
+  const zhihu = createZhihuClient(getZhihuCookie)
+  const tieba = createTiebaClient()
+  /*** 只在本机保存最近访问过的吧名，重复访问时移到最前。 */
+  ipcMain.handle('tieba:recent-forums', (): string[] => store.get('tiebaForums'))
+  ipcMain.handle('tieba:remember-forum', (_event, forum: string): string[] => {
+    const name = forum.trim()
+    if (!name || name.length > 80) return store.get('tiebaForums')
+    const recent = [name, ...store.get('tiebaForums').filter(item => item !== name)].slice(0, 10)
+    store.set('tiebaForums', recent)
+    return recent
+  })
+  ipcMain.handle('tieba:threads', (_event, forum: string, page: number, sort: TiebaSort) => tieba.threads(forum, page, sort))
+  ipcMain.handle('tieba:posts', (_event, threadId: string, page: number) => tieba.posts(threadId, page))
+  ipcMain.handle('tieba:replies', (_event, threadId: string, postId: string, page: number) => tieba.replies(threadId, postId, page))
+  ipcMain.handle('tieba:image', (_event, urls: string[]) => tieba.image(urls))
+  ipcMain.handle('zhihu:cookie-status', () => Boolean(store.get('zhihuCookie')))
+  ipcMain.handle('zhihu:save-cookie', (_event, cookie: string): ZhihuResult<boolean> => {
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统加密服务不可用，无法保存 Cookie。' }
+    if (typeof cookie !== 'string' || !cookie.includes('=')) return { ok: false, error: '请输入有效的知乎 Cookie。' }
+    store.set('zhihuCookie', safeStorage.encryptString(cookie.trim()).toString('base64'))
+    return { ok: true, data: true }
+  })
+  ipcMain.handle('zhihu:clear-cookie', () => { store.set('zhihuCookie', '') })
+  ipcMain.handle('zhihu:feed', (_event, next?: string) => zhihu.feed(next))
+  ipcMain.handle('zhihu:detail', (_event, type: ZhihuContentType, id: string) => zhihu.detail(type, id))
+  ipcMain.handle('zhihu:comments', (_event, type: ZhihuContentType, id: string, next?: string) => zhihu.comments(type, id, next))
+  ipcMain.handle('zhihu:replies', (_event, id: string, next?: string) => zhihu.replies(id, next))
+  ipcMain.handle('zhihu:image', (_event, url: string) => zhihu.image(url))
   const progressKey = (path: string): string => Buffer.from(path).toString('base64url')
   const getProgress = (path: string): number => store.get('progress')[progressKey(path)] ?? 0
   const saveProgress = (path: string, progress: number): void => {
@@ -142,24 +185,26 @@ app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.mybook.reader')
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
   createWindow(store.get('windowSize'))
-  /*** 关闭时记录调整后的窗口宽高，下次启动恢复。 */
-  mainWindow?.on('close', () => {
+  /*** 所有阅读板块共用窗口尺寸，缩放结束和关闭时都保存。 */
+  const saveWindowSize = (): void => {
     if (!mainWindow) return
     const [width, height] = mainWindow.getSize()
     store.set('windowSize', { width, height })
-  })
+  }
+  mainWindow?.on('close', saveWindowSize)
   registerBossKey(store.get('settings'))
 
-  ipcMain.handle('reader:context-menu', (_event, hasSelection: boolean): Promise<void> => {
+  ipcMain.handle('reader:context-menu', (_event, hasSelection: boolean, view: ReaderView): Promise<void> => {
     const currentSettings = store.get('settings')
     const menu = Menu.buildFromTemplate([
-      { label: '换一本 TXT', click: () => sendCommand('open-book') },
-      { label: currentSettings.showToolbar ? '隐藏菜单' : '显示菜单', click: () => sendCommand('toggle-menu') },
+      { label: '返回主菜单', visible: view !== 'home', click: () => sendCommand('return-home') },
+      { label: '换一本 TXT', visible: view === 'book', click: () => sendCommand('open-book') },
+      { label: currentSettings.showToolbar ? '隐藏菜单' : '显示菜单', visible: view !== 'home', click: () => sendCommand('toggle-menu') },
       { label: '鼠标移出后隐去内容', type: 'checkbox', checked: currentSettings.hideOnLeave, click: () => sendCommand('toggle-hide-on-leave') },
       { label: '阅读设置', click: () => sendCommand('settings') },
       { type: 'separator' },
-      { label: '上一页', click: () => sendCommand('previous-page') },
-      { label: '下一页', click: () => sendCommand('next-page') },
+      { label: '上一页', visible: view === 'book', click: () => sendCommand('previous-page') },
+      { label: '下一页', visible: view === 'book', click: () => sendCommand('next-page') },
       { label: '复制选中文字', role: 'copy', enabled: hasSelection },
       { type: 'separator' },
       { label: '隐藏窗口', click: () => mainWindow?.hide() }
@@ -176,7 +221,7 @@ app.whenReady().then(async () => {
   ]))
   tray.on('double-click', showWindow)
 
-  ipcMain.handle('reader:get-settings', () => store.get('settings'))
+  ipcMain.handle('reader:get-settings', () => ({ ...defaultSettings, ...store.get('settings') }))
   /*** 原生文件选择框关闭后，用屏幕坐标确认鼠标是否已离开阅读窗口。 */
   ipcMain.handle('reader:cursor-outside', (): boolean => {
     if (!mainWindow) return false
@@ -241,7 +286,10 @@ app.whenReady().then(async () => {
       height
     })
   })
-  ipcMain.on('reader:resize-end', () => { resizeSession = null })
+  ipcMain.on('reader:resize-end', () => {
+    if (resizeSession) saveWindowSize()
+    resizeSession = null
+  })
   ipcMain.on('reader:move-start', () => {
     if (mainWindow) moveSession = { bounds: mainWindow.getBounds(), cursor: screen.getCursorScreenPoint() }
   })

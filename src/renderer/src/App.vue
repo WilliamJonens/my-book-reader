@@ -2,14 +2,18 @@
 import { computed, nextTick, onMounted, onUnmounted, shallowRef, useTemplateRef } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import type { BookData, ReaderSettings } from '../../shared/reader'
+import type { BookData, ReaderCommand, ReaderSettings, ReaderView } from '../../shared/reader'
 import SettingsPanel from './components/SettingsPanel.vue'
+import ZhihuFeed from './components/ZhihuFeed.vue'
+import TiebaFeed from './components/TiebaFeed.vue'
 import { eventToShortcut } from './utils/keyboard'
 
 /*** 当前阅读的小说与本地设置。 */
 const book = shallowRef<BookData | null>(null)
 const settings = shallowRef<ReaderSettings | null>(null)
 const showSettings = shallowRef(false)
+/*** 每次启动先展示主菜单，各板块共用当前窗口的摸鱼设置。 */
+const view = shallowRef<ReaderView>('home')
 const message = shallowRef('')
 const reader = useTemplateRef<HTMLElement>('reader')
 const progress = shallowRef(0)
@@ -135,6 +139,26 @@ async function showBook(nextBook: BookData): Promise<void> {
   })
 }
 
+/*** 切换主菜单与板块，重新进入 TXT 时恢复当前阅读位置。 */
+async function enterView(target: ReaderView): Promise<void> {
+  if (view.value === target) return
+  if (view.value === 'book') flushProgress()
+  stopAutoScroll()
+  showSettings.value = false
+  message.value = ''
+  if (target === 'book' && book.value) restoringBook = true
+  view.value = target
+  if (target === 'book' && book.value) {
+    await nextTick()
+    await syncReaderWidth(true)
+    await scrollToProgress(progress.value)
+    requestAnimationFrame(() => {
+      restoringBook = false
+      updateProgress()
+    })
+  }
+}
+
 /*** 打开用户手动选取的 TXT。 */
 async function openBook(): Promise<void> {
   contextMenuOpen.value = false
@@ -209,7 +233,7 @@ function onMouseLeave(): void {
   if (settings.value.hideOnLeave) {
     stopAutoScroll()
     stealthHidden.value = true
-  } else if (!showSettings.value && settings.value.autoScroll && book.value) {
+  } else if (!showSettings.value && settings.value.autoScroll && view.value === 'book' && book.value) {
     stopAutoScroll()
     scrollFrame = requestAnimationFrame(autoScrollFrame)
   }
@@ -253,7 +277,8 @@ function turnPage(direction: number): void {
 }
 
 /*** 响应主进程右键菜单的命令。 */
-function handleCommand(command: 'open-book' | 'toggle-menu' | 'toggle-hide-on-leave' | 'settings' | 'previous-page' | 'next-page'): void {
+function handleCommand(command: ReaderCommand): void {
+  if (command === 'return-home') void enterView('home')
   if (command === 'open-book') void openBook()
   if (command === 'toggle-menu' && settings.value) void updateSettings({ showToolbar: !settings.value.showToolbar })
   if (command === 'toggle-hide-on-leave' && settings.value) void updateSettings({ hideOnLeave: !settings.value.hideOnLeave })
@@ -266,7 +291,7 @@ function handleCommand(command: 'open-book' | 'toggle-menu' | 'toggle-hide-on-le
 async function openContextMenu(): Promise<void> {
   contextMenuOpen.value = true
   try {
-    await window.api.showContextMenu(Boolean(window.getSelection() && !window.getSelection()?.isCollapsed))
+    await window.api.showContextMenu(Boolean(window.getSelection() && !window.getSelection()?.isCollapsed), view.value)
   } finally {
     contextMenuOpen.value = false
   }
@@ -366,22 +391,41 @@ onUnmounted(() => {
     <div v-for="edge in resizeEdges" :key="edge" class="resize-handle" :class="edge"
       @pointerdown="startResize($event, edge)" @pointermove="moveResize"
       @pointerup="endResize" @pointercancel="endResize" @lostpointercapture="endResize"></div>
-    <header v-if="settings?.showToolbar" class="toolbar">
+    <header v-if="view === 'home' || settings?.showToolbar" class="toolbar">
       <div class="brand">my-book阅读器</div>
-      <button type="button" @click="openBook">{{ book ? '换一本' : '打开 TXT' }}</button>
-      <label v-if="book" class="encoding-label">编码
+      <label v-if="view !== 'home'" class="mode-label">模式
+        <select :value="view" aria-label="阅读模式" @change="enterView(($event.target as HTMLSelectElement).value as ReaderView)">
+          <option value="home">主菜单</option>
+          <option value="book">TXT</option>
+          <option value="zhihu">知乎</option>
+          <option value="tieba">贴吧</option>
+        </select>
+      </label>
+      <button v-if="view === 'book'" type="button" @click="openBook">{{ book ? '换一本' : '打开 TXT' }}</button>
+      <label v-if="view === 'book' && book" class="encoding-label">编码
         <select :value="book.encoding" @change="changeEncoding(($event.target as HTMLSelectElement).value)">
           <option v-for="encoding in encodingOptions" :key="encoding" :value="encoding">{{ encoding }}</option>
         </select>
       </label>
       <div class="toolbar-spacer"></div>
       <button type="button" title="阅读设置" @click="showSettings = !showSettings">设置</button>
-      <button class="toolbar-toggle" type="button" title="隐藏工具栏，Ctrl+M 恢复" @click="updateSettings({ showToolbar: false })">隐藏菜单</button>
+      <button v-if="view !== 'home'" class="toolbar-toggle" type="button" title="隐藏工具栏，Ctrl+M 恢复" @click="updateSettings({ showToolbar: false })">隐藏菜单</button>
       <button type="button" title="最小化" @click="minimizeWindow">—</button>
       <button type="button" title="退出" @click="closeWindow">×</button>
     </header>
 
-    <div v-if="!book" class="empty-state">
+    <!-- 主菜单仅负责进入板块；后续新增内容可在这里增加入口。 -->
+    <div v-if="view === 'home'" class="home-state">
+      <h1>选择阅读内容</h1>
+      <div class="home-options">
+        <button type="button" @click="enterView('book')"><strong>TXT 小说</strong><span>本地阅读</span></button>
+        <button type="button" @click="enterView('zhihu')"><strong>知乎</strong><span>问答与文章</span></button>
+        <button type="button" @click="enterView('tieba')"><strong>贴吧</strong><span>帖子与楼层</span></button>
+      </div>
+    </div>
+    <ZhihuFeed v-else-if="view === 'zhihu' && settings" :settings="settings" />
+    <TiebaFeed v-else-if="view === 'tieba'" />
+    <div v-else-if="!book" class="empty-state">
       <h1>打开一本 TXT，开始阅读</h1>
       <p>小说仅在本地读取。可设置透明背景、翻页键与摸鱼操作。</p>
       <button v-if="!settings?.showToolbar" type="button" @click="openBook">打开 TXT</button>
@@ -395,11 +439,11 @@ onUnmounted(() => {
           :data-index="row.index" :style="{ ...textStyle, transform: 'translateY(' + row.start + 'px)' }">{{ chunks[row.index].text }}</div>
       </div>
     </section>
-    <footer v-if="book && settings?.showToolbar" class="status-bar">
+    <footer v-if="view === 'book' && book && settings?.showToolbar" class="status-bar">
       <span>{{ book.name }}</span><span>{{ Math.round(progress * 100) }}%</span>
     </footer>
     <div v-if="message" class="message" role="alert">{{ message }}</div>
-    <SettingsPanel v-if="showSettings && settings" :settings="settings" @change="updateSettings" @close="showSettings = false" />
+    <SettingsPanel v-if="showSettings && settings" :settings="settings" :view="view" @change="updateSettings" @close="showSettings = false" />
   </main>
 </template>
 
@@ -410,9 +454,11 @@ onUnmounted(() => {
 .shell.fullyTransparent .status-bar { border-color: transparent; }
 .shell.fullyTransparent .toolbar button,
 .shell.fullyTransparent .empty-state button,
+.shell.fullyTransparent .home-options button,
 .shell.fullyTransparent .encoding-label select { border-color: transparent; background: transparent; }
 .shell.fullyTransparent .toolbar button:hover,
-.shell.fullyTransparent .empty-state button:hover { background: transparent; }
+.shell.fullyTransparent .empty-state button:hover,
+.shell.fullyTransparent .home-options button:hover { background: transparent; }
 .drag-strip { height: 10px; flex: none; background: transparent; cursor: move; touch-action: none; -webkit-app-region: no-drag; }
 .resize-handle { position: absolute; z-index: 20; -webkit-app-region: no-drag; touch-action: none; }
 .resize-handle.n, .resize-handle.s { left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
@@ -430,9 +476,20 @@ onUnmounted(() => {
 .toolbar { display: flex; align-items: center; overflow: hidden; min-height: 45px; padding: 0 12px; border-bottom: 1px solid #ffffff28; background: #11192366; -webkit-app-region: no-drag; }
 .toolbar button, .toolbar select { -webkit-app-region: no-drag; }
 .brand { margin-right: 18px; white-space: nowrap; font-weight: 600; font-size: 13px; }
+.mode-label { margin-right: 7px; font-size: 12px; white-space: nowrap; }
+.mode-label select { margin-left: 4px; padding: 4px; border: 1px solid #ffffff38; border-radius: 5px; background: #202b38; color: inherit; font-size: 12px; }
 .toolbar button, .empty-state button { margin-right: 5px; padding: 6px 10px; border: 1px solid #ffffff38; border-radius: 5px; background: #ffffff12; color: inherit; cursor: pointer; font-size: 12px; white-space: nowrap; }
 .toolbar button:hover, .empty-state button:hover { background: #ffffff27; }
 .toolbar-spacer { flex: 1; }
+.home-state { display: flex; flex: 1; min-height: 0; overflow-y: auto; flex-direction: column; align-items: center; justify-content: center; padding: 24px 16px; text-align: center; scrollbar-width: none; }
+.home-state::-webkit-scrollbar { display: none; }
+.home-state h1 { margin: 0 0 18px; font-size: 20px; font-weight: 500; }
+.home-options { display: flex; flex-wrap: wrap; justify-content: center; width: 100%; max-width: 650px; }
+.home-options button { flex: 1 1 150px; min-width: 140px; margin: 0 5px 10px; padding: 22px 12px; border: 1px solid #ffffff38; border-radius: 8px; background: #ffffff12; color: inherit; cursor: pointer; }
+.home-options button:hover { background: #ffffff27; }
+.home-options strong, .home-options span { display: block; }
+.home-options strong { font-size: 17px; }
+.home-options span { margin-top: 8px; color: #ffffffa8; font-size: 12px; }
 .encoding-label { margin-left: 8px; font-size: 12px; white-space: nowrap; -webkit-app-region: no-drag; }
 .encoding-label select { max-width: 95px; margin-left: 5px; padding: 4px; border: 1px solid #ffffff38; border-radius: 5px; background: #202b38; color: inherit; font-size: 11px; }
 .reader { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 22px 36px 38px; scrollbar-width: thin; scrollbar-color: #ffffff55 transparent; }
@@ -452,5 +509,6 @@ onUnmounted(() => {
 @media (max-width: 560px) { .brand { display: none; } .reader { padding: 16px 20px; } .toolbar button { padding: 5px; } }
 @media (max-width: 430px) { .encoding-label { display: none; } }
 @media (max-width: 300px) { .toolbar { padding: 0 6px; } .toolbar-toggle { display: none; } .toolbar button { margin-right: 3px; padding: 5px 4px; } }
+@media (max-height: 320px) { .home-state { justify-content: flex-start; } }
 @media (prefers-reduced-motion: reduce) { .reader { scroll-behavior: auto; } }
 </style>
