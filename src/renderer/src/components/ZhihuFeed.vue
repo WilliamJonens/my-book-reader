@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, reactive, shallowRef, useTemplateRef } from 'vue'
+import { useViewer } from 'v-viewer'
 import type { ZhihuComment, ZhihuFeedItem, ZhihuResult } from '../../../shared/zhihu'
 import type { ReaderSettings } from '../../../shared/reader'
+import { formatTime } from '../utils/formatTime'
 
 /*** 字号沿用阅读器设置，知乎三个文字层级独立调节。 */
 const props = defineProps<{ settings: ReaderSettings }>()
@@ -22,7 +24,18 @@ const replyError = reactive<Record<string, string>>({})
 const busy = reactive<Record<string, boolean>>({})
 const scroller = useTemplateRef<HTMLElement>('scroller')
 const sentinel = useTemplateRef<HTMLElement>('sentinel')
+/*** 单张图片预览沿用当前已加载的地址，兼容主进程补取后的图片。 */
+const previewImages = shallowRef<string[]>([])
+const { show: showImage } = useViewer({ images: previewImages, options: { toolbar: true, navbar: false, title: false } })
 let observer: IntersectionObserver | undefined
+
+/*** 点击已加载的知乎图片时打开缩放查看器。 */
+function openImage(event: MouseEvent): void {
+  const image = event.currentTarget as HTMLImageElement
+  if (!image.naturalWidth) return
+  previewImages.value = [image.currentSrc || image.src]
+  showImage()
+}
 
 /*** 从富文本中只提取文本、图片和视频地址，不执行站外 HTML。 */
 function blocks(html: string): Array<{ kind: 'text' | 'image' | 'video'; value: string }> {
@@ -173,14 +186,14 @@ onUnmounted(() => observer?.disconnect())
     <p v-if="message" class="feed-message" role="alert">{{ message }}</p>
     <article v-for="item in items" :key="`${item.type}:${item.id}`" class="feed-card">
       <h2>{{ blocks(item.title).map(block => block.value).join(' ') }}</h2>
-      <small>{{ item.author }} · {{ item.type === 'zvideo' ? '视频' : item.type === 'article' ? '文章' : item.type === 'pin' ? '想法' : '回答' }}</small>
+      <small>{{ item.author }} · {{ item.type === 'zvideo' ? '视频' : item.type === 'article' ? '文章' : item.type === 'pin' ? '想法' : '回答' }}<span v-if="item.createdTime" class="timestamp">{{ formatTime(item.createdTime) }}</span></small>
       <p v-if="!expanded[`${item.type}:${item.id}`]" class="excerpt">{{ blocks(item.excerpt).filter(block => block.kind === 'text').map(block => block.value).join(' ') }}</p>
-      <img v-if="!expanded[`${item.type}:${item.id}`] && item.coverUrl?.startsWith('https://')" class="media" :src="item.coverUrl" alt="内容封面" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, item.coverUrl || '')" />
+      <img v-if="!expanded[`${item.type}:${item.id}`] && item.coverUrl?.startsWith('https://')" class="media" :src="item.coverUrl" alt="内容封面" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, item.coverUrl || '')" @click="openImage($event)" />
       <div v-if="expanded[`${item.type}:${item.id}`]" class="full-content">
         <button class="collapse-top" type="button" @click="toggle(item, $event)">收起全文</button>
         <template v-for="(block, index) in blocks(item.content || '')" :key="index">
           <p v-if="block.kind === 'text'">{{ block.value }}</p>
-          <img v-else-if="block.kind === 'image'" class="media" :src="block.value" alt="文章配图" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, block.value)" />
+          <img v-else-if="block.kind === 'image'" class="media" :src="block.value" alt="文章配图" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, block.value)" @click="openImage($event)" />
           <video v-else class="media" :src="block.value" controls preload="none"></video>
         </template>
         <video v-if="item.videoUrl?.startsWith('https://')" class="media" :src="item.videoUrl" controls preload="none" :poster="item.coverUrl"></video>
@@ -194,13 +207,13 @@ onUnmounted(() => observer?.disconnect())
         <p v-if="commentError[`${item.type}:${item.id}`]" class="comment-state" role="alert">{{ commentError[`${item.type}:${item.id}`] }} <button type="button" @click="loadComments(item)">重试</button></p>
         <p v-if="comments[`${item.type}:${item.id}`]?.length === 0 && !busy[`c:${item.type}:${item.id}`]" class="comment-state">暂无评论</p>
         <div v-for="comment in comments[`${item.type}:${item.id}`] || []" :key="comment.id" class="comment">
-          <strong>{{ comment.author }}</strong>
+          <strong>{{ comment.author }}</strong><span v-if="comment.createdTime" class="timestamp">{{ formatTime(comment.createdTime) }}</span>
           <p>{{ blocks(comment.content).filter(block => block.kind === 'text').map(block => block.value).join(' ') }}</p>
           <button v-if="comment.childCount && !replies[comment.id]" type="button" @click="loadReplies(comment)">展开 {{ comment.childCount }} 条回复</button>
           <p v-if="replyError[comment.id]" class="comment-state" role="alert">{{ replyError[comment.id] }} <button type="button" @click="loadReplies(comment)">重试</button></p>
           <div v-if="replies[comment.id]" class="replies">
             <div v-for="reply in replies[comment.id]" :key="reply.id" class="comment">
-              <strong>{{ reply.author }}</strong><span v-if="reply.replyTo"> 回复 {{ reply.replyTo }}</span>
+              <strong>{{ reply.author }}</strong><span v-if="reply.replyTo"> 回复 {{ reply.replyTo }}</span><span v-if="reply.createdTime" class="timestamp">{{ formatTime(reply.createdTime) }}</span>
               <p>{{ blocks(reply.content).filter(block => block.kind === 'text').map(block => block.value).join(' ') }}</p>
             </div>
             <button v-if="replyNext[comment.id]" type="button" @click="loadReplies(comment, true)">加载更多回复</button>
@@ -224,10 +237,12 @@ onUnmounted(() => observer?.disconnect())
 .feed-card { margin-bottom: 9px; padding: 12px; border: 1px solid #ffffff26; border-radius: 8px; }
 .feed-card h2 { margin: 0 0 5px; font-size: var(--title-size); line-height: 1.4; }
 .feed-card small { color: #ffffffa8; font-size: var(--hint-size); }
+.timestamp { margin-left: 7px; color: #ffffffa8; font-size: 12px; font-weight: 400; }
 .excerpt { max-height: 4.5em; overflow: hidden; margin: 7px 0; line-height: 1.5; }
 .full-content { line-height: 1.55; overflow-wrap: anywhere; }
 .full-content p { margin: 6px 0; }
 .media { display: block; max-width: 100%; max-height: 420px; margin: 8px 0; }
+.media:is(img) { cursor: zoom-in; }
 .card-actions { justify-content: flex-start; margin-top: 8px; }
 .card-actions button { margin-right: 8px; }
 .comments { margin-top: 8px; border-top: 1px solid #ffffff24; }

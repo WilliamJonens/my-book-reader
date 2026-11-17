@@ -5,6 +5,7 @@ export interface ZhihuFeedItem {
   type: ZhihuContentType
   title: string
   author: string
+  createdTime?: number
   excerpt: string
   content?: string
   commentCount: number
@@ -15,6 +16,7 @@ export interface ZhihuFeedItem {
 export interface ZhihuComment {
   id: string
   author: string
+  createdTime?: number
   content: string
   childCount: number
   replyTo?: string

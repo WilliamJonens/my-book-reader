@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, shallowRef, useTemplateRef } from 'vue'
+import { useViewer } from 'v-viewer'
 import type { TiebaPost, TiebaSort, TiebaThread } from '../../../shared/tieba'
+import { formatTime } from '../utils/formatTime'
 
 /*** 吧名、帖子和楼层都只在当前视图中维护，不影响 TXT 阅读进度。 */
 const forumInput = shallowRef('')
@@ -23,10 +25,26 @@ const replyError = reactive<Record<string, string>>({})
 const loading = shallowRef(false)
 const message = shallowRef('')
 const scroller = useTemplateRef<HTMLElement>('scroller')
+/*** 单张图片预览使用实际加载地址，避免补取后的图片再次直连失败。 */
+const previewImages = shallowRef<string[]>([])
+const { show: showImage } = useViewer({ images: previewImages, options: { toolbar: true, navbar: false, title: false } })
 /*** 相同表情只通过主进程补取一次，避免楼中楼重复请求。 */
 const imageCache = new Map<string, Promise<string | null>>()
 /*** 进入帖子前的列表滚动位置，仅在当前贴吧视图中使用。 */
 let listScrollTop = 0
+
+/*** 点击配图时优先读取较大图片，失败则预览当前已加载的图片。 */
+async function openImage(event: MouseEvent, largerUrls: string[] = []): Promise<void> {
+  const image = event.currentTarget as HTMLImageElement
+  if (!image.naturalWidth) return
+  let source = image.currentSrc || image.src
+  if (largerUrls.length) {
+    const result = await window.api.getTiebaImage(largerUrls)
+    if (result.ok && result.data) source = result.data
+  }
+  previewImages.value = [source]
+  showImage()
+}
 
 onMounted(async () => { recentForums.value = await window.api.getTiebaRecentForums() })
 
@@ -162,11 +180,11 @@ async function loadReplies(post: TiebaPost): Promise<void> {
 
     <template v-if="selected">
       <article v-for="post in posts" :key="post.id" class="post-card">
-        <div class="post-head"><strong>{{ post.floor }} 楼 · {{ post.author }}</strong></div>
+        <div class="post-head"><strong>{{ post.floor }} 楼 · {{ post.author }}</strong><span v-if="post.createdTime" class="timestamp">{{ formatTime(post.createdTime) }}</span></div>
         <div class="post-content">
           <template v-for="(fragment, index) in post.fragments" :key="index">
             <span v-if="fragment.type === 'text'">{{ fragment.value }}</span>
-            <img v-else :src="fragment.value" :class="{ emoji: fragment.type === 'emoji' }" :alt="fragment.type === 'emoji' ? '贴吧表情' : '帖子配图'" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, [fragment.value, ...(fragment.fallbackUrls || [])])" />
+            <img v-else :src="fragment.value" :class="{ emoji: fragment.type === 'emoji' }" :alt="fragment.type === 'emoji' ? '贴吧表情' : '帖子配图'" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, [fragment.value, ...(fragment.fallbackUrls || [])])" @click="fragment.type === 'image' && openImage($event, fragment.fallbackUrls)" />
           </template>
         </div>
         <button v-if="post.replyCount && !replies[post.id]" type="button" @click="loadReplies(post)">展开 {{ post.replyCount }} 条楼中楼</button>
@@ -174,11 +192,11 @@ async function loadReplies(post: TiebaPost): Promise<void> {
         <div v-if="replies[post.id]" class="subposts">
           <p v-if="!replies[post.id].length" class="status">暂无可读取的楼中楼</p>
           <div v-for="reply in replies[post.id]" :key="reply.id" class="subpost">
-            <strong>{{ reply.author }}</strong>
+            <strong>{{ reply.author }}</strong><span v-if="reply.createdTime" class="timestamp">{{ formatTime(reply.createdTime) }}</span>
             <div class="post-content">
               <template v-for="(fragment, index) in reply.fragments" :key="index">
                 <span v-if="fragment.type === 'text'">{{ fragment.value }}</span>
-                <img v-else :src="fragment.value" :class="{ emoji: fragment.type === 'emoji' }" :alt="fragment.type === 'emoji' ? '贴吧表情' : '回复配图'" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, [fragment.value, ...(fragment.fallbackUrls || [])])" />
+                <img v-else :src="fragment.value" :class="{ emoji: fragment.type === 'emoji' }" :alt="fragment.type === 'emoji' ? '贴吧表情' : '回复配图'" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, [fragment.value, ...(fragment.fallbackUrls || [])])" @click="fragment.type === 'image' && openImage($event, fragment.fallbackUrls)" />
               </template>
             </div>
           </div>
@@ -190,8 +208,8 @@ async function loadReplies(post: TiebaPost): Promise<void> {
     <template v-else>
       <article v-for="thread in threads" :key="thread.id" class="thread-card">
         <button type="button" @click="openThread(thread)">
-          <span class="thread-copy"><strong>{{ thread.title }}</strong><small>{{ thread.author }} · {{ thread.replyCount }} 条回复</small></span>
-          <img v-if="thread.coverUrl" :src="thread.coverUrl" alt="" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, [thread.coverUrl])" />
+          <span class="thread-copy"><strong>{{ thread.title }}</strong><small>{{ thread.author }} · {{ thread.replyCount }} 条回复<span v-if="thread.createdTime" class="timestamp">{{ formatTime(thread.createdTime) }}</span></small></span>
+          <img v-if="thread.coverUrl" :src="thread.coverUrl" alt="帖子缩略图" loading="lazy" referrerpolicy="no-referrer" @error="rescueImage($event, [thread.coverUrl])" @click.stop="openImage($event)" />
         </button>
       </article>
       <button v-if="threadMore" type="button" :disabled="loading" @click="loadThreads">加载更多帖子</button>
@@ -225,7 +243,9 @@ async function loadReplies(post: TiebaPost): Promise<void> {
 .thread-copy { flex: 1; min-width: 0; }
 .thread-copy strong { display: block; font-weight: 400; }
 .thread-card small { display: block; margin-top: 6px; color: #ffffffa8; font-size: 11px; }
+.timestamp { margin-left: 7px; color: #ffffffa8; font-size: 12px; font-weight: 400; }
 .thread-card img { flex: none; width: 96px; height: 72px; margin-left: 10px; border-radius: 5px; object-fit: cover; }
+.thread-card img, .post-content img:not(.emoji) { cursor: zoom-in; }
 .post-head { margin-bottom: 7px; font-size: 12px; }
 .post-content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; font-size: 14px; }
 .post-content img { display: block; max-width: 100%; max-height: 420px; margin: 8px 0; }

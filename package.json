@@ -1,6 +1,6 @@
 {
   "name": "my-book-reader",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "productName": "my-book阅读器",
   "description": "支持 TXT、知乎和贴吧的桌面阅读器",
   "main": "./out/main/index.js",
@@ -26,7 +26,8 @@
     "chardet": "^2.2.0",
     "electron-store": "^12.0.0",
     "iconv-lite": "^0.7.3",
-    "tieba.js": "^3.1.3"
+    "tieba.js": "^3.1.3",
+    "v-viewer": "^5.0.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "3.0.1",

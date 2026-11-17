@@ -1,3 +1,4 @@
+import { net } from 'electron'
 import type { ZhihuComment, ZhihuContentType, ZhihuFeedItem, ZhihuPage, ZhihuResult } from '../shared/zhihu'
 
 // 知乎响应字段随内容类型变化，入口在此统一做运行时检查。
@@ -13,14 +14,19 @@ export function createZhihuClient(getCookie: () => string) {
     if (!['www.zhihu.com', 'zhuanlan.zhihu.com', 'lens.zhihu.com'].includes(url.hostname) || url.protocol !== 'https:') {
       throw new Error('无效的知乎接口地址。')
     }
-    const response = await fetch(url, {
+    const response = await net.fetch(url.href, {
       headers: { Cookie: cookie, Referer: 'https://www.zhihu.com/', Accept: 'application/json' },
       redirect: 'manual'
     })
-    if (response.status >= 300 && response.status < 400) throw new Error('知乎 Cookie 已过期或被拒绝，请在设置中更新。')
-    if (response.status === 401 || response.status === 403) throw new Error('知乎 Cookie 已过期或被拒绝，请在设置中更新。')
+    if (response.status >= 300 && response.status < 400) throw new Error('知乎请求被重定向，请检查登录状态或访问限制。')
+    if (response.status === 401) throw new Error('知乎 Cookie 已过期，请在设置中更新。')
+    if (response.status === 403) {
+      const detail = response.headers.get('content-type')?.includes('json') ? await response.json() as Json : null
+      const code = typeof detail?.code === 'number' ? `，错误码 ${detail.code}` : ''
+      throw new Error(`知乎拒绝了请求（403${code}），请稍后重试。`)
+    }
     if (!response.ok) throw new Error(`知乎请求失败（${response.status}）。`)
-    if (!response.headers.get('content-type')?.includes('json')) throw new Error('知乎 Cookie 已过期或接口返回了非 JSON 内容，请检查设置。')
+    if (!response.headers.get('content-type')?.includes('json')) throw new Error('知乎接口返回了非 JSON 内容，请稍后重试。')
     const body = await response.json() as Json
     if (!body || typeof body !== 'object') throw new Error('知乎返回了无法识别的数据。')
     if (body.code && body.message) throw new Error(String(body.message))
@@ -67,6 +73,7 @@ export function createZhihuClient(getCookie: () => string) {
           id: String(target.id), type,
           title: String(target.title || target.question?.title || target.excerpt_title || '知乎内容'),
           author: String(target.author?.name || ''),
+          createdTime: Number(target.created_time) || undefined,
           excerpt: String(target.excerpt || entry.brief?.content || ''),
           content: typeof target.content === 'string' ? target.content : undefined,
           commentCount: Number(target.comment_count || 0),
@@ -96,6 +103,7 @@ export function createZhihuClient(getCookie: () => string) {
         id, type,
         title: String(target.title || target.question?.title || target.excerpt_title || '知乎内容'),
         author: String(target.author?.name || ''),
+        createdTime: Number(target.created_time) || undefined,
         excerpt: String(target.excerpt || ''),
         content: String(target.content_html || (typeof target.content === 'string' ? target.content : '')),
         commentCount: Number(target.comment_count || 0),
@@ -105,9 +113,7 @@ export function createZhihuClient(getCookie: () => string) {
     comments: (type: ZhihuContentType, id: string, next?: string): Promise<ZhihuResult<ZhihuPage<ZhihuComment>>> => result(async () => {
       if (!/^\d+$/.test(id)) throw new Error('无效的内容编号。')
       const plural = type === 'zvideo' ? 'zvideos' : `${type}s`
-      const path = type === 'answer'
-        ? `/api/v4/answers/${id}/root_comments?order=by_vote&limit=20&offset=0`
-        : `/api/v4/comment_v5/${plural}/${id}/root_comment?order_by=score&limit=20&offset=0`
+      const path = `/api/v4/comment_v5/${plural}/${id}/root_comment?order_by=score&limit=20&offset=`
       const body = await request(next || path)
       return { items: normalizeComments(body.data), next: paging(body) }
     }),
@@ -123,7 +129,8 @@ export function createZhihuClient(getCookie: () => string) {
 function normalizeComments(data: unknown): ZhihuComment[] {
   const list = Array.isArray(data) ? data : (data && typeof data === 'object' && Array.isArray((data as Json).items) ? (data as Json).items : [])
   return list.map((item: Json) => ({
-    id: String(item.id), author: String(item.author?.id || item.author?.url_token || '匿名'),
+    id: String(item.id), author: String(item.author?.name || item.author?.url_token || '匿名'),
+    createdTime: Number(item.created_time) || undefined,
     content: String(item.content?.html || item.content?.text || item.content || item.comment?.content || item.content_html || item.text || ''),
     childCount: Number(item.child_comment_count || item.child_comments_count || item.child_comments?.length || 0),
     replyTo: item.reply_to_author?.name ? String(item.reply_to_author.name) : undefined

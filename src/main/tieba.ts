@@ -50,6 +50,7 @@ export function createTiebaClient() {
       id: post.id,
       floor: post.floor,
       author: post.author?.nameShow || post.author?.name || post.authorId,
+      createdTime: post.time || undefined,
       fragments: fragments(post.content),
       replyCount: 'subPostNumber' in post ? post.subPostNumber : 0
     }
@@ -92,6 +93,7 @@ export function createTiebaClient() {
           return {
             id: thread.id, title: thread.title || '无标题',
             author: thread.author?.nameShow || thread.author?.name || thread.authorId,
+            createdTime: thread.createTime || undefined,
             replyCount: thread.replyNum,
             coverUrl: cover.startsWith('https://') ? cover : undefined
           }

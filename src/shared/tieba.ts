@@ -8,6 +8,7 @@ export interface TiebaThread {
   id: string
   title: string
   author: string
+  createdTime?: number
   replyCount: number
   coverUrl?: string
 }
@@ -18,6 +19,7 @@ export interface TiebaPost {
   id: string
   floor: number
   author: string
+  createdTime?: number
   fragments: TiebaFragment[]
   replyCount: number
 }
